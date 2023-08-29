@@ -12,6 +12,7 @@ import logging
 
 from PiFinder.tetra3 import Tetra3
 from PiFinder import utils
+from pprint import pprint
 
 
 def solver(shared_state, solver_queue, camera_image, console_queue):
@@ -40,10 +41,13 @@ def solver(shared_state, solver_queue, camera_image, console_queue):
                 solve_image = camera_image.copy()
 
                 new_solve = t3.solve_from_image(
-                    solve_image, fov_estimate=10.2, fov_max_error=0.5, solve_timeout=500
+                    solve_image, #return_matches=True
+                    #fov_estimate=10.2, fov_max_error=0.5, solve_timeout=500
                 )
 
                 solved |= new_solve
+
+                pprint(solved)
 
                 total_tetra_time = solved["T_extract"] + solved["T_solve"]
                 if total_tetra_time > 1000:
