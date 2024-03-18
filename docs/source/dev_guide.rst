@@ -88,7 +88,7 @@ Therefore, switch to the ``~/PiFinder/python`` folder and start the PiFinder pyt
 
 You simply stop the program with "Ctrl + C".
 
-**Remember**: PiFinder is designed to automatically start after boot. So a PiFinder process is likely running. Before you can start a PiFinder process for testing purposes from the command line, you have to stop all currently running PiFinder instances. Simply, because you can not run multiple PiFinder instances in parallel. They would try to access the same hardware, which is not possible. You can do this e.g. with the following code, which uses awk to kill all runnding processes of PiFinder:
+**Remember**: PiFinder is designed to automatically start after boot. So a PiFinder process is likely running. Before you can start a PiFinder process for testing purposes from the command line, you have to stop all currently running PiFinder instances. Simply, because you can not run multiple PiFinder instances in parallel. They would try to access the same hardware, which is not possible. You can do this e.g. with the following code, which uses ``awk`` to kill all running processes of PiFinder found by a simple ``ps`` command(awk is already installed in debian distribution):
 
 .. code-block::
 
@@ -212,11 +212,11 @@ The way to get this functionality, is to enter PiFinder in the 'test' or 'debug'
 
 First method: Press (short press) **"ENT-A"** again and again to cycle through the screens until you get to the **Console screen**. There press the **"0"** key (the display shows the message "Debug: true"). This will supply a fake GPS lock, time and cause the PiFinder to just solve an image from disk.  But it will respond to IMU movement and allow use of things like Push-To and all the other functions that require a solve/lock. You can leave the "demo mode" by just again cycle to the Console screen and press "0" again (the display shows the message "Debug: false").
 
-Second method: run PiFinder with the :ref:`dev_guide:Debugging from the command line` functionality.
+Second method: run PiFinder with :ref:`dev_guide:Debugging from the command line`.
 
 .. note::
 
-  If you are using the demo-mode and move the PiFinder and scope around, you will notice, that the picture alway starts at the same "standard demo picture". And it always switch back to the same picture, once you stopped. Do not expect to move through the sky, like you normally would do and get a solve to the newly reached location. You will always be brought back to the same position in the sky.
+  If you are using the demo-mode and move the PiFinder and scope around, you will notice, that the picture alway starts at the same "standard demo image". And the display will always switch back to the same picture, once you stopped. Do not expect to move through the sky, like you normally would do and get a solve to the newly reached location. You will always be brought back to the same position in the sky using the "standard demo image".
 
 
 .. image:: images/user_guide/DEMO_MODE_001_docs.png
