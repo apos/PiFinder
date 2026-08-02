@@ -74,6 +74,9 @@ class Network:
     def local_ip(self):
         return "NONE"
 
+    def all_ips(self):
+        return ["NONE"]
+
 
 def remove_backup():
     """

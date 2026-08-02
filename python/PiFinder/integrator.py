@@ -67,6 +67,14 @@ logger = logging.getLogger("IMU.Integrator")
 # Use IMU tracking if the angle moved is above this deadband.
 IMU_MOVED_ANG_THRESHOLD = np.deg2rad(0.06)
 
+# Fake-solve simulation (see fake_solve_active): angular *rate* (not
+# cumulative angle) above which the telescope is considered "being
+# moved by hand", below which it's "settled" - mimics a real solve
+# landing right after a user stops slewing. Needs real-world tuning;
+# picked to sit clearly above hand-tremor/sensor-noise rates and
+# clearly below even a slow deliberate pan.
+FAKE_SOLVE_SETTLE_RATE_THRESHOLD = np.deg2rad(2.0)  # rad/s
+
 
 def integrator(
     shared_state,
@@ -96,6 +104,12 @@ def integrator(
         estimate = PointingEstimate()
         # Epoch of the last estimate we published; gate re-publishing on it.
         last_published_time = time.time()
+
+        # Fake-solve simulation motion tracking (see fake_solve_active) -
+        # previous IMU sample and whether we were moving last loop, used to
+        # detect a moving -> settled transition.
+        fake_solve_prev_imu: Optional[ImuSample] = None
+        fake_solve_was_moving = False
 
         was_replaying = False
         telemetry = TelemetryManager(
@@ -187,6 +201,54 @@ def integrator(
             ):
                 if _advance_with_imu(estimate, idr, imu):
                     pointing_updated = True
+
+            # 2b. Fake-solve simulation: mimic a human moving a telescope by
+            # hand (see docs/concepts/pifinder_fake_solve_simulation.md) -
+            # while active, watch the *rate* of real IMU motion (not the
+            # cumulative angle-since-anchor _advance_with_imu above already
+            # uses) to tell "currently being slewed" apart from "settled".
+            # On the moving -> settled transition, treat the current
+            # (already dead-reckoned) estimate as a fresh "solve" - exactly
+            # what happens for real once a user stops panning and the
+            # solver catches up on the next frame. Reuses
+            # _apply_successful_solve() unmodified: the only difference
+            # from a real solve is where camera/aligned came from.
+            if shared_state.fake_solve_active() and imu and not telemetry.replaying:
+                if (
+                    fake_solve_prev_imu is not None
+                    and estimate.imu_anchor is not None
+                    and estimate.pointing.camera.estimate is not None
+                    and estimate.pointing.aligned.estimate is not None
+                ):
+                    dt = imu.timestamp - fake_solve_prev_imu.timestamp
+                    if dt > 0:
+                        angular_rate = (
+                            qt.get_quat_angular_diff(
+                                fake_solve_prev_imu.quat, imu.quat
+                            )
+                            / dt
+                        )
+                        is_moving = angular_rate > FAKE_SOLVE_SETTLE_RATE_THRESHOLD
+                        if fake_solve_was_moving and not is_moving:
+                            now = time.time()
+                            logger.info(
+                                "Fake solve: motion settled, treating current "
+                                "estimate as a fresh solve"
+                            )
+                            estimate = _apply_successful_solve(
+                                estimate,
+                                SuccessfulSolve(
+                                    camera=estimate.pointing.camera.estimate,
+                                    aligned=estimate.pointing.aligned.estimate,
+                                    imu_anchor=imu.quat,
+                                    last_solve_attempt=now,
+                                    last_solve_success=now,
+                                ),
+                                idr,
+                            )
+                            pointing_updated = True
+                        fake_solve_was_moving = is_moving
+                fake_solve_prev_imu = imu
 
             # 3. Publish if we updated something newer than what we last sent.
             if (
@@ -281,10 +343,21 @@ def _apply_failed_solve(
     failed while the IMU sat in its deadband — even though dead-reckoning
     still knows where we point. ``estimate_time`` is likewise left intact;
     a fresh epoch only attaches when the IMU actually advances the cells.
+
+    ``last_solve_success`` is only overwritten when the incoming result
+    actually has one: the solver process tracks its own local
+    ``last_solve_success`` (only ever set by a *real* camera solve) and
+    that is what every ``FailedSolve`` carries. A fake-solve simulation
+    (see ``fake_solve_active``) can advance ``estimate.last_solve_success``
+    from *outside* the solver's own real-solve bookkeeping - without this
+    guard, the very next real failed attempt would silently regress it
+    back to the solver's own (still-``None``, if the sky was never really
+    solved this session) value.
     """
     estimate.diagnostics = result.diagnostics
     estimate.last_solve_attempt = result.last_solve_attempt
-    estimate.last_solve_success = result.last_solve_success
+    if result.last_solve_success is not None:
+        estimate.last_solve_success = result.last_solve_success
     estimate.solve_source = SolveSource.CAMERA_FAILED
     return estimate
 

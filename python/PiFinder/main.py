@@ -84,7 +84,21 @@ def init_keypad_pwm():
     global hardware_platform
     if hardware_platform == "Pi":
         keypad_pwm = HardwarePWM(pwm_channel=1, hz=120)
-        keypad_pwm.start(0)
+        # Right after boot, exporting a PWM channel creates its sysfs dir
+        # root-owned; a udev rule then asynchronously chgrp/chmod's it
+        # group-writable. start()'s enable-file write can lose that race and
+        # raise PermissionError - HardwarePWM.__init__() already retries its
+        # own change_frequency() call for the same reason, but start() has no
+        # such protection. Retry briefly instead of crashing the whole
+        # process over a startup timing issue.
+        for attempt in range(10):
+            try:
+                keypad_pwm.start(0)
+                break
+            except PermissionError:
+                if attempt == 9:
+                    raise
+                time.sleep(0.2)
 
 
 def set_keypad_brightness(percentage: float):
@@ -148,11 +162,19 @@ StateManager.register("NewImage", Image.new)
 
 
 class PowerManager:
+    # Pre-solve sleep states
+    _WARMUP = "warmup"      # initial 2-min window before first solve
+    _PRE_SLEEP = "pre_sleep"  # 30s sleep between attempts
+    _RETRY = "retry"        # 1-min retry window after sleep
+    _SOLVED = "solved"      # normal operation after first solve
+
     def __init__(self, cfg, shared_state, display_device):
         self.cfg = cfg
         self.shared_state = shared_state
         self.display_device = display_device
         self.last_activity = time.time()
+        self._solve_state = self._WARMUP
+        self._state_start = time.time()
 
     def register_activity(self):
         """
@@ -186,27 +208,75 @@ class PowerManager:
         self.shared_state.set_power_state(0)
         self.sleep_screen()
 
+    def _has_solve(self):
+        solution = self.shared_state.solution()
+        return solution is not None and solution.has_pointing()
+
+    def _enter_state(self, state):
+        self._solve_state = state
+        self._state_start = time.time()
+
+    def _elapsed(self):
+        return time.time() - self._state_start
+
     def update(self):
         """
-        Check IMU for activity
-        go to sleep if needed
-        if asleep, Introduce wait state
+        Check IMU for activity, manage sleep with pre-solve state machine.
+
+        Pre-solve behavior (battery-friendly):
+          WARMUP  (2 min)  → no solve → sleep 30s → RETRY (1 min) → loop
+          Any state        → solve    → SOLVED (use configured timeout)
+          SOLVED           → solve lost (clouds) → WARMUP
         """
         if self.get_sleep_timeout() <= 0:
-            # Disabled
+            # Sleep disabled — stay awake always
             self.register_activity()
             return
 
-        if self.shared_state.power_state() > 0:
-            # We are awake, should we sleep?
-            if time.time() - self.last_activity > self.get_sleep_timeout():
-                self.go_to_sleep()
+        has_solve = self._has_solve()
 
-        else:  # We are asleepd, should we wake up?
-            _imu = self.shared_state.imu()
-            if _imu:
-                if _imu.moving:
+        if self._solve_state == self._SOLVED:
+            if not has_solve:
+                # Lost solve (clouds etc.) — restart warmup
+                self._enter_state(self._WARMUP)
+                self.wake_up()
+                return
+            # Normal operation: sleep after configured timeout of inactivity
+            if self.shared_state.power_state() > 0:
+                if time.time() - self.last_activity > self.get_sleep_timeout():
+                    self.go_to_sleep()
+            else:
+                _imu = self.shared_state.imu()
+                if _imu and _imu.moving:
                     self.wake_up()
+
+        elif self._solve_state == self._WARMUP:
+            if has_solve:
+                self._enter_state(self._SOLVED)
+                return
+            if self._elapsed() > 120:
+                # 2 min without solve → sleep 30s
+                self._enter_state(self._PRE_SLEEP)
+                self.go_to_sleep()
+            else:
+                self.register_activity()
+
+        elif self._solve_state == self._PRE_SLEEP:
+            if self._elapsed() > 30:
+                # Done sleeping → retry for 1 min
+                self._enter_state(self._RETRY)
+                self.wake_up()
+
+        elif self._solve_state == self._RETRY:
+            if has_solve:
+                self._enter_state(self._SOLVED)
+                return
+            if self._elapsed() > 60:
+                # 1 min retry failed → sleep again
+                self._enter_state(self._PRE_SLEEP)
+                self.go_to_sleep()
+            else:
+                self.register_activity()
 
     def get_sleep_timeout(self):
         """
@@ -367,6 +437,11 @@ def main(
     alignment_command_queue: Queue = Queue()
     alignment_response_queue: Queue = Queue()
     ui_queue: Queue = Queue()
+    # Separate from alignment_command_queue on purpose - FakeSolve isn't a
+    # SolverCommand and this queue's only reader/writer pair is the web API
+    # and the solver process, so existing align_command_queue consumers are
+    # never affected.
+    fake_solve_command_queue: Queue = Queue()
 
     # init queues for logging
     keyboard_logqueue: Queue = log_helper.get_queue()
@@ -503,6 +578,7 @@ def main(
                 server_logqueue,
                 verbose,
             ),
+            kwargs={"fake_solve_command_queue": fake_solve_command_queue},
         )
         server_process.start()
 
@@ -587,6 +663,7 @@ def main(
                 camera_command_queue,  # For raw SQM capture
                 verbose,
             ),
+            kwargs={"fake_solve_command_queue": fake_solve_command_queue},
         )
         solver_process.start()
 
@@ -725,13 +802,6 @@ def main(
                                 and not location.source.startswith("CONFIG:")
                                 and not location.source == "MANUAL"
                                 and not location.source == "replay"
-                                and (
-                                    location.error_in_m == 0
-                                    or float(gps_content["error_in_m"])
-                                    < float(
-                                        location.error_in_m
-                                    )  # Only if new error is smaller
-                                )
                             ):
                                 logger.debug(
                                     f"Updating GPS location: new content: {gps_content}, old content: {location}"
@@ -808,6 +878,12 @@ def main(
                     if catalogs.catalog_filter is not None:
                         catalogs.catalog_filter.mark_dirty()
                     menu_manager.message(_("Catalogs\nFully Loaded"), 2)
+                elif ui_command == "toggle_debug_solve":
+                    # Same effect as picking "Tools -> Test Mode" from the
+                    # menu (callbacks.activate_debug()), reachable directly
+                    # via the web API instead of simulating menu navigation
+                    # keypresses through keyboard_queue.
+                    command_queues["camera"].put("debug")
                 elif ui_command == "test_mode":
                     dt = timez.utc(2025, 6, 28, 11, 0, 0)
                     shared_state.set_datetime(dt)
@@ -1304,6 +1380,8 @@ if __name__ == "__main__":
             gps_monitor = importlib.import_module("PiFinder.gps_fake")
         elif gps_type == "ublox":
             gps_monitor = importlib.import_module("PiFinder.gps_ubx")
+        elif gps_type == "stellarmate":
+            gps_monitor = importlib.import_module("PiFinder.gps_stellarmate")
         else:
             gps_monitor = importlib.import_module("PiFinder.gps_gpsd")
 

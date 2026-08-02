@@ -956,24 +956,7 @@ pifinder_menu = {
                         },
                     ],
                 },
-                {
-                    "name": _("WiFi Mode"),
-                    "class": UITextMenu,
-                    "select": "single",
-                    "value_callback": callbacks.get_wifi_mode,
-                    "items": [
-                        {
-                            "name": _("Client Mode"),
-                            "value": "Client",
-                            "callback": callbacks.go_wifi_cli,
-                        },
-                        {
-                            "name": _("AP Mode"),
-                            "value": "AP",
-                            "callback": callbacks.go_wifi_ap,
-                        },
-                    ],
-                },
+
                 {
                     "name": _("Mount Type"),
                     "class": UITextMenu,
@@ -1090,6 +1073,10 @@ pifinder_menu = {
                                             "name": _("GPSD (generic)"),
                                             "value": "gpsd",
                                         },
+                                        {
+                                            "name": _("Stellarmate"),
+                                            "value": "stellarmate",
+                                        },
                                     ],
                                 },
                                 {
@@ -1198,7 +1185,6 @@ pifinder_menu = {
                     ],
                 },
                 {"name": _("Console"), "class": UIConsole},
-                {"name": _("Software Upd"), "class": UISoftware},
                 {"name": _("Test Mode"), "callback": callbacks.activate_debug},
                 {
                     "name": _("Experimental"),

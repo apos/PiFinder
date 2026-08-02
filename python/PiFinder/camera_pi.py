@@ -314,6 +314,17 @@ def get_images(shared_state, camera_image, command_queue, console_queue, log_que
     """
     Instantiates the camera hardware
     then calls the universal image loop
+
+    Falls back to the debug camera if the real hardware fails to
+    initialize (e.g. no camera physically attached) - without this, this
+    whole process crashes before it ever reaches get_image_loop(), taking
+    down every command this process would otherwise still service (Solve
+    Simulation / Test Mode included, since that's just a "debug" command
+    on this same process's command_queue - see camera_interface.py's
+    command loop). A crashed process can't "toggle into" debug mode; it
+    has to already be running one to receive the toggle at all. See
+    basic-memory/pifinder-stellarmate/00001 ("Test Mode kann abgestuerzten
+    Kamera-Prozess nicht retten") and 00034.
     """
     MultiprocLogging.configurer(log_queue)
 
@@ -324,7 +335,26 @@ def get_images(shared_state, camera_image, command_queue, console_queue, log_que
     if exposure_time == "auto":
         exposure_time = 400000  # Start with default 400ms
 
-    camera_hardware = CameraPI(exposure_time)
+    fell_back = False
+    try:
+        camera_hardware = CameraPI(exposure_time)
+    except Exception as e:
+        logger.error(f"Real camera init failed ({e}) - falling back to debug camera")
+        console_queue.put("CAM: No hardware, using debug camera")
+        from PiFinder.camera_debug import CameraDebug
+
+        camera_hardware = CameraDebug(exposure_time)
+        fell_back = True
+
+    # initial_debug=True (only on fallback) seeds get_image_loop()'s own
+    # "debug" toggle state to match, instead of separately poking
+    # shared_state.debug_solve() from out here - that used to leave the
+    # *displayed* flag and the loop's own internal debug variable (which
+    # actually gates whether a canned test image is loaded) out of sync,
+    # so the very next Solve Simulation toggle click flipped from the
+    # real, unseen state rather than the one the UI showed. See
+    # basic-memory/pifinder-stellarmate/00037 and 00038.
     camera_hardware.get_image_loop(
-        shared_state, camera_image, command_queue, console_queue, cfg
+        shared_state, camera_image, command_queue, console_queue, cfg,
+        initial_debug=fell_back,
     )

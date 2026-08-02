@@ -294,7 +294,8 @@ class CameraInterface:
         pass
 
     def get_image_loop(
-        self, shared_state, camera_image, command_queue, console_queue, cfg
+        self, shared_state, camera_image, command_queue, console_queue, cfg,
+        initial_debug=False,
     ):
         try:
             # Store shared_state for access by capture() methods
@@ -342,7 +343,20 @@ class CameraInterface:
             # 60 half-second cycles (30 seconds between captures in sleep mode)
             sleep_delay = 60
             was_sleeping = False
-            test_mode_on = False
+            # initial_debug lets a caller start this loop with the "debug"
+            # toggle already engaged (camera_pi.py's fallback to CameraDebug
+            # does this) - without it, shared_state.debug_solve() and this
+            # local `test_mode_on` (which actually gates loading a canned
+            # test image, see the capture branch below) could disagree:
+            # setting only shared_state's flag directly, without also
+            # seeding this local variable, left them out of sync - the very
+            # next "debug" toggle command then flipped from the *real*,
+            # unseen local state instead of the state the UI was showing.
+            # Found live: clicking "off" while already on the fallback
+            # camera left Test Mode still effectively on. See
+            # basic-memory/pifinder-stellarmate/00038.
+            test_mode_on = initial_debug
+            shared_state.set_debug_solve(test_mode_on)
             while True:
                 sleeping = state_utils.sleep_for_framerate(
                     shared_state, limit_framerate=False
@@ -514,6 +528,7 @@ class CameraInterface:
                     try:
                         if command == "debug":
                             test_mode_on = not test_mode_on
+                            shared_state.set_debug_solve(test_mode_on)
 
                         if command.startswith("set_exp"):
                             transient_exposure = command.startswith(

@@ -43,14 +43,15 @@ from PiFinder.types.positioning import (
     AlignedResult,
     AlignmentResult,
     FailedSolve,
+    FakeSolve,
     Pointing,
     ReloadSqmCalibration,
     SolveDiagnostics,
     SuccessfulSolve,
 )
 
-sys.path.append(str(utils.tetra3_dir))
-import tetra3
+sys.path.append(str(utils.tetra3_dir.parent))
+from tetra3 import main
 from tetra3 import cedar_detect_client
 
 logger = logging.getLogger("Solver")
@@ -820,6 +821,31 @@ def _build_failed_solve(
     )
 
 
+def _build_fake_solve(command: FakeSolve, shared_state) -> SuccessfulSolve:
+    """Build a synthetic :class:`SuccessfulSolve` for a :class:`FakeSolve`
+    command - same shape as a real solve, so the integrator's existing
+    handling (reseed solve/estimate cells, IMU anchor) needs no changes.
+
+    ``camera``/``aligned`` are set equal (``Roll=0.0``): there's no real
+    frame or target_pixel offset involved, so there is nothing to derive
+    a distinct aligned direction from. The IMU anchor comes from whatever
+    ``shared_state.imu()`` has right now, if anything - a real solve can
+    also succeed with no IMU sample (see docs/ax/positioning/CONTEXT.md),
+    so ``None`` here is an already-handled, not a new, case.
+    """
+    now = time.time()
+    pointing = Pointing(RA=command.ra, Dec=command.dec, Roll=0.0)
+    imu_sample = shared_state.imu()
+    imu_anchor = imu_sample.quat if imu_sample else None
+    return SuccessfulSolve(
+        camera=pointing,
+        aligned=pointing,
+        imu_anchor=imu_anchor,
+        last_solve_attempt=now,
+        last_solve_success=now,
+    )
+
+
 def solver(
     shared_state,
     solver_queue,
@@ -831,10 +857,11 @@ def solver(
     camera_command_queue,
     is_debug=False,
     max_imu_ang_during_exposure=1.0,  # Max allowed turn during exp [degrees]
+    fake_solve_command_queue=None,
 ):
     MultiprocLogging.configurer(log_queue)
     logger.debug("Starting Solver")
-    t3 = tetra3.Tetra3(str(utils.tetra3_dir / "data" / "default_database.npz"))
+    t3 = main.Tetra3(str(utils.tetra3_dir / "data" / "default_database.npz"))
     align_ra = 0
     align_dec = 0
     last_solve_attempt: float = 0.0
@@ -911,6 +938,33 @@ def solver(
                             command,
                         )
 
+                # Drain fake-solve commands (separate queue from
+                # align_command_queue on purpose - see FakeSolve's
+                # docstring). Each one is applied immediately, not merged
+                # with the real solve loop below.
+                if fake_solve_command_queue is not None:
+                    while True:
+                        try:
+                            fake_command = fake_solve_command_queue.get(block=False)
+                        except queue.Empty:
+                            break
+                        if isinstance(fake_command, FakeSolve):
+                            logger.info(
+                                "Fake solve injected: RA=%.4f, Dec=%.4f",
+                                fake_command.ra,
+                                fake_command.dec,
+                            )
+                            shared_state.set_fake_solve_active(True)
+                            solver_queue.put(
+                                _build_fake_solve(fake_command, shared_state)
+                            )
+                        else:
+                            logger.warning(
+                                "Unknown fake-solve command (type=%s): %r",
+                                type(fake_command).__name__,
+                                fake_command,
+                            )
+
                 state_utils.sleep_for_framerate(shared_state)
 
                 # use the time the exposure started here to
@@ -975,10 +1029,10 @@ def solver(
                             logger.warning(
                                 f"Cedar connection failed: {e}, falling back to tetra3"
                             )
-                            centroids = tetra3.get_centroids_from_image(np_image)
+                            centroids = main.get_centroids_from_image(np_image)
                     else:
                         # Cedar not available, use tetra3
-                        centroids = tetra3.get_centroids_from_image(np_image)
+                        centroids = main.get_centroids_from_image(np_image)
                     t_extract = (precision_timestamp() - t0) * 1000
 
                     logger.debug(
