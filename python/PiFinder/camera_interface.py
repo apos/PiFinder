@@ -155,7 +155,8 @@ class CameraInterface:
         pass
 
     def get_image_loop(
-        self, shared_state, camera_image, command_queue, console_queue, cfg
+        self, shared_state, camera_image, command_queue, console_queue, cfg,
+        initial_debug=False,
     ):
         try:
             # Store shared_state for access by capture() methods
@@ -169,7 +170,20 @@ class CameraInterface:
                 shared_state.set_camera_type(camera_type)
                 logger.info(f"Camera type set to: {camera_type}")
 
-            debug = False
+            # initial_debug lets a caller start this loop with the "debug"
+            # toggle already engaged (camera_pi.py's fallback to CameraDebug
+            # does this) - without it, shared_state.debug_solve() and this
+            # local `debug` (which actually gates loading a canned test
+            # image, see the capture branch below) could disagree: setting
+            # only shared_state's flag directly, without also seeding this
+            # local variable, left them out of sync - the very next "debug"
+            # toggle command then flipped from the *real*, unseen local
+            # state instead of the state the UI was showing. Found live:
+            # clicking "off" while already on the fallback camera left Test
+            # Mode still effectively on. See basic-memory/
+            # pifinder-stellarmate/00038.
+            debug = initial_debug
+            shared_state.set_debug_solve(debug)
 
             # Check if auto-exposure was previously enabled in config
             config_exp = cfg.get_option("camera_exp")
@@ -388,6 +402,7 @@ class CameraInterface:
                                 debug = False
                             else:
                                 debug = True
+                            shared_state.set_debug_solve(debug)
 
                         if command.startswith("set_exp"):
                             exp_value = command.split(":")[1]

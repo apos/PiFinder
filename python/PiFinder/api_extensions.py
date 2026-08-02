@@ -21,6 +21,7 @@ import logging
 
 from flask import request, session, Response
 from PIL import Image
+from PiFinder.types.positioning import FakeSolve
 
 logger = logging.getLogger("PiFinderAPI")
 
@@ -160,6 +161,7 @@ def register_api_routes(app, server_instance, require_auth=False):
                 "power_state": ss.power_state(),
                 "solve_state": ss.solve_state(),
                 "camera_type": ss.camera_type(),
+                "debug_solve": ss.debug_solve(),
                 "location": loc.to_dict() if loc else None,
                 "solution": _solution_to_dict(sol),
                 "datetime": {
@@ -749,6 +751,49 @@ def register_api_routes(app, server_instance, require_auth=False):
     # ───────────────────────────────────────────────
     # 4. Lightweight control endpoints (optional, for remote triggering by OpenClaw)
     # ───────────────────────────────────────────────
+
+    @app.route("/api/debug_solve", methods=["POST"])
+    def api_debug_solve():
+        """Toggle the same "debug"/test-image substitution as Tools -> Test
+        Mode (callbacks.activate_debug()), without going through menu
+        navigation/keyboard_queue - useful for automation that wants this
+        reliably, since simulating the equivalent keypresses is not (menu
+        navigation via keyboard_queue can silently drop or ignore input).
+        Read the resulting state back via "debug_solve" in GET /api/status.
+        """
+        try:
+            server_instance.ui_queue.put("toggle_debug_solve")
+            return _json_response({"success": True})
+        except Exception as e:
+            logger.error("api/debug_solve error: %s", e)
+            return _json_response({"error": str(e)}, 500)
+
+    @app.route("/api/fake_solve", methods=["POST"])
+    def api_fake_solve():
+        """Inject a one-time, synthetic solve at a given RA/Dec, bypassing
+        image capture/plate-solving entirely - lets PiFinder's own IMU
+        dead-reckoning take over from that fixed point, for testing
+        anything downstream of a solve (e.g. an external mount bridge)
+        without a real sky. JSON body: {"ra": <deg>, "dec": <deg>}.
+        Distinct from /api/debug_solve, which substitutes a canned image
+        for the real solver to actually plate-solve.
+        """
+        try:
+            if server_instance.fake_solve_command_queue is None:
+                return _json_response(
+                    {"error": "fake_solve_command_queue not available (standalone/test mode)"},
+                    503,
+                )
+            body = request.get_json(silent=True)
+            if not body or "ra" not in body or "dec" not in body:
+                return _json_response({"error": "Missing 'ra'/'dec' field"}, 400)
+            ra = float(body["ra"])
+            dec = float(body["dec"])
+            server_instance.fake_solve_command_queue.put(FakeSolve(ra=ra, dec=dec))
+            return _json_response({"success": True, "ra": ra, "dec": dec})
+        except Exception as e:
+            logger.error("api/fake_solve error: %s", e)
+            return _json_response({"error": str(e)}, 500)
 
     @app.route("/api/key", methods=["POST"])
     def api_key():

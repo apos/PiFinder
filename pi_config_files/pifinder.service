@@ -1,13 +1,29 @@
 [Unit]
 Description=PiFinder
-After=basic.target
+After=basic.target pifinder-setup.service
+Requires=pifinder-setup.service
+# The Waveshare LCD dev overlay (waveshare35b-v2, toggled via the Control
+# Center's "Turn LCD On/Off" button) claims GPIO lines the real HAT's OLED
+# needs too - starting anyway crashes on 'lgpio.error: GPIO not allocated'.
+# /dev/fb1 only exists when that overlay is active, so skip cleanly (not a
+# failure - systemd logs a condition-check skip, not a crash) instead of
+# starting and immediately dying. See basic-memory/pifinder-stellarmate/
+# 00024 and 00030.
+ConditionPathExists=!/dev/fb1
 
 [Service]
 Type=idle
-User=pifinder
-WorkingDirectory=/home/pifinder/PiFinder/python
-ExecStart=/usr/bin/python -m PiFinder.main
+User=stellarmate
+WorkingDirectory=/home/stellarmate/PiFinder/python
+ExecStart=/home/stellarmate/PiFinder/python/.venv/bin/python -m PiFinder.main --verbose
+ExecStopPost=/home/stellarmate/PiFinder/python/.venv/bin/python /home/stellarmate/PiFinder_Stellarmate/bin/display_off.py
 AmbientCapabilities=CAP_NET_BIND_SERVICE
+SupplementaryGroups=kmem gpio spi i2c video input
+# A cold boot can lose the PWM sysfs permission race (see main_py.diff's
+# init_keypad_pwm retry) badly enough to still crash once; self-heal instead
+# of staying "failed" until someone notices and restarts it by hand.
+Restart=on-failure
+RestartSec=2
 
 [Install]
 WantedBy=basic.target

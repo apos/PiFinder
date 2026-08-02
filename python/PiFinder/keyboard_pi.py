@@ -49,9 +49,9 @@ class KeyboardPi(KeyboardInterface):
         ]
         # fmt: on
 
-        # physical keyboard support init
-        self.li_kb = libinput.LibInput(context_type=libinput.ContextType.UDEV)
-        self.li_kb.assign_seat("seat0")
+        # physical keyboard support init (python-libinput 0.1.0 API)
+        self.li_kb = libinput.LibInput(udev=True)
+        self.li_kb.udev_assign_seat("seat0")
 
     def get_keyboard_key(self) -> int:
         """
@@ -71,17 +71,23 @@ class KeyboardPi(KeyboardInterface):
         }
 
         while True:
-            while True:
-                self.li_kb._libinput.libinput_dispatch(self.li_kb._li)
-                hevent = self.li_kb._libinput.libinput_get_event(self.li_kb._li)
-                if not hevent:
-                    return 0
-                type_ = self.li_kb._libinput.libinput_event_get_type(hevent)
-
-                if type_.is_keyboard():
-                    kbev = libinput.KeyboardEvent(hevent, self.li_kb._libinput)
-                    if kbev.key_state == libinput.constant.KeyState.RELEASED:
-                        return key_mapping.get(kbev.key, 0)
+            from libinput.event import Event as LibInputEvent
+            self.li_kb._libinput.libinput_dispatch(self.li_kb._li)
+            hevent = self.li_kb._libinput.libinput_get_event(self.li_kb._li)
+            if not hevent:
+                return 0
+            event = LibInputEvent(hevent, self.li_kb._libinput)
+            if event.type == libinput.constant.Event.KEYBOARD_KEY:
+                kbev = event.get_keyboard_event()
+                if kbev.get_key_state() == libinput.constant.KeyState.RELEASED:
+                    # get_key() returns a libinput.evcodes.Key enum member
+                    # (plain Enum, not IntEnum) - int() on it raises
+                    # "TypeError: int() argument ... not 'Key'"; .value is
+                    # the actual integer keycode. Found live: this crashed
+                    # the whole keyboard subprocess on the very first key
+                    # release, making the physical keypad appear completely
+                    # dead - see basic-memory/pifinder-stellarmate/00032.
+                    return key_mapping.get(kbev.get_key().value, 0)
 
     def run_keyboard(self, log_queue):
         """

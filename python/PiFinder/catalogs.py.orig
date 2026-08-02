@@ -1,6 +1,5 @@
 # mypy: ignore-errors
 import logging
-import os
 import re
 import time
 import datetime
@@ -730,7 +729,7 @@ class CatalogBackgroundLoader:
 
         # Performance tuning - load in batches with CPU yielding
         self.batch_size = 100  # Objects per batch before yielding CPU
-        self.yield_time = 0.1  # Seconds to sleep between batches (100ms)
+        self.yield_time = 0.05  # Seconds to sleep between batches (50ms)
 
     def start(self) -> None:
         """Start background loading in daemon thread"""
@@ -757,7 +756,6 @@ class CatalogBackgroundLoader:
     def _load_deferred_objects(self) -> None:
         """Background worker - loads objects in batches with CPU yielding"""
         try:
-            os.nice(15)
             total = len(self._deferred_data)
             batch = []
             current_catalog = None

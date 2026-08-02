@@ -303,6 +303,17 @@ class SharedStateObj:
         self.__arch = None
         self.__camera_align = False
         self.__camera_type = "imx296"  # Default, will be set by camera process
+        # Whether the camera process is substituting canned test images for
+        # real capture ("Tools -> Test Mode" in the UI, callbacks.activate_debug()).
+        # Previously this toggle lived only as a local variable inside
+        # camera_interface.py's capture loop, with no way for anything else
+        # (UI, web API) to read back whether it was currently on or off.
+        self.__debug_solve: bool = False
+        # Whether the integrator is currently simulating telescope motion
+        # from real IMU data (see FakeSolve/integrator.py's settle
+        # detection) - distinct from debug_solve, which fakes the camera
+        # image, not the position pipeline.
+        self.__fake_solve_active: bool = False
         self.__cam_raw = None
         # Are we prepared to do alt/az math
         # We need gps lock and datetime
@@ -367,6 +378,18 @@ class SharedStateObj:
 
     def set_camera_type(self, v: str):
         self.__camera_type = v
+
+    def debug_solve(self) -> bool:
+        return self.__debug_solve
+
+    def set_debug_solve(self, v: bool):
+        self.__debug_solve = v
+
+    def fake_solve_active(self) -> bool:
+        return self.__fake_solve_active
+
+    def set_fake_solve_active(self, v: bool):
+        self.__fake_solve_active = v
 
     def sats(self):
         return self.__sats

@@ -611,6 +611,23 @@ also carries non-alignment commands today, hence the broader name)."""
 
 
 @dataclass
+class FakeSolve:
+    """Inject a one-time, synthetic ``SuccessfulSolve`` at (ra, dec),
+    bypassing image capture/centroid extraction/tetra3 entirely - lets
+    PiFinder's own IMU dead-reckoning take over from a chosen fixed
+    point, for testing anything downstream of a solve (e.g. an
+    external mount bridge) without a real sky. Degrees.
+
+    Travels on its own dedicated queue (not ``align_command_queue`` -
+    this is not part of ``SolverCommand``), so existing consumers of
+    that queue's message shape are unaffected.
+    """
+
+    ra: float
+    dec: float
+
+
+@dataclass
 class AlignedResult:
     """Reply on ``align_result_queue`` carrying the pixel where the
     alignment target landed.

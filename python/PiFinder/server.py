@@ -6,6 +6,7 @@ import uuid
 import os
 import argparse
 import sys
+import subprocess
 import multiprocessing
 from datetime import datetime, timezone
 
@@ -98,12 +99,17 @@ class Server:
         gps_queue=None,
         shared_state=None,
         is_debug=False,
+        fake_solve_command_queue=None,
     ):
         self.version_txt = f"{utils.pifinder_dir}/version.txt"
         self.keyboard_queue = keyboard_queue or multiprocessing.Queue()
         self.ui_queue = ui_queue or multiprocessing.Queue()
         self.gps_queue = gps_queue or multiprocessing.Queue()
         self.shared_state = shared_state or MockSharedState()
+        # None in standalone/test mode (no solver process to receive it) -
+        # the /api/fake_solve endpoint checks for this and errors clearly
+        # instead of silently doing nothing.
+        self.fake_solve_command_queue = fake_solve_command_queue
         self.ki = KeyboardInterface()
         # gps info
         self.lat = None
@@ -241,7 +247,9 @@ class Server:
                 title=gettext("Home"),
                 software_version=software_version,
                 wifi_mode=self.network.wifi_mode(),
-                ip=self.network.local_ip(),
+                # Every non-loopback IP (WiFi, LAN, VPN/WireGuard, etc.), not
+                # just the one the OS would pick for outbound traffic.
+                ip=", ".join(self.network.all_ips()),
                 network_name=self.network.get_connected_ssid(),
                 gps_icon=gps_icon,
                 gps_text=gps_text,
@@ -252,6 +260,28 @@ class Server:
                 dec_text=dec_text,
             )
 
+        @app.route("/smos")
+        def smos():
+            return app.jinja_env.get_template("smos.html").render(
+                title=_("INDI Drivers"),
+                ips=self.network.all_ips(),
+            )
+
+        @app.route("/api/setup_gui/start", methods=["POST"])
+        def api_start_setup_gui():
+            # No @auth_required / no loopback check: this button lives on the
+            # unauthenticated INDI Drivers page (same reasoning as that page
+            # itself) and the Setup GUI it launches is equally unauthenticated
+            # once running - starting it a little early changes nothing about
+            # who could already reach it once it's up.
+            launcher = (
+                "/home/stellarmate/PiFinder_Stellarmate/gui_installer/launch_setup_gui.sh"
+            )
+            if not os.path.isfile(launcher):
+                return jsonify({"error": f"launcher not found: {launcher}"}), 404
+            subprocess.Popen(["bash", launcher], start_new_session=True)
+            return jsonify({"ok": True})
+
         @app.route("/login", methods=["GET", "POST"])
         def login():
             if request.method == "POST":
@@ -260,7 +290,7 @@ class Server:
                 origin_url = request.form.get("origin_url") or session.get(
                     "origin_url", "/"
                 )
-                if sys_utils.verify_password("pifinder", password):
+                if sys_utils.verify_password("stellarmate", password):
                     session["authenticated"] = True
                     session.pop("origin_url", None)
                     return redirect(origin_url)
@@ -522,6 +552,27 @@ class Server:
             self.network.set_host_name(host_name)
             return app.jinja_env.get_template("restart.html").render(title=_("Restart"))
 
+        @app.route("/api/set_mount_type", methods=["POST"])
+        def api_set_mount_type():
+            # Called by the PiFinder Mount Bridge INDI driver (StellarMate
+            # integration) to keep PiFinder's own Mount Type setting in sync
+            # with whatever real INDI mount is currently connected. Local
+            # machine-to-machine call, not a browser session - no @auth_required,
+            # restricted to loopback instead.
+            if request.remote_addr not in ("127.0.0.1", "::1"):
+                return jsonify({"error": "forbidden"}), 403
+
+            payload = request.get_json(silent=True) or {}
+            mount_type = request.form.get("mount_type") or payload.get("mount_type")
+            if mount_type not in ("EQ", "Alt/Az"):
+                return jsonify({"error": "mount_type must be 'EQ' or 'Alt/Az'"}), 400
+
+            cfg = config.Config()
+            cfg.load_config()
+            cfg.set_option("mount_type", mount_type)
+            self.ui_queue.put("reload_config")
+            return jsonify({"ok": True, "mount_type": mount_type})
+
         @app.route("/tools/pwchange", methods=["POST"])
         @auth_required
         def password_change():
@@ -537,7 +588,7 @@ class Server:
 
             if new_passworda == new_passwordb:
                 if sys_utils.change_password(
-                    "pifinder", current_password, new_passworda
+                    "stellarmate", current_password, new_passworda
                 ):
                     return app.jinja_env.get_template("tools.html").render(
                         title=_("Tools"), status_message=_("Password Changed")
@@ -1215,6 +1266,15 @@ class Server:
         self.app = app
 
     def run(self):
+        # Opt-in override for a second, parallel instance (e.g. headless
+        # testing alongside the real service) - unset in normal operation,
+        # which keeps the 80/8080 behavior below completely unchanged.
+        override_port = os.environ.get("PIFINDER_WEB_PORT")
+        if override_port:
+            waitress_serve(self.app, host="0.0.0.0", port=int(override_port))
+            logger.info(f"Webserver started on port {override_port} (PIFINDER_WEB_PORT override)")
+            return
+
         # If the PiFinder software is running as a service
         # it can grab port 80.  If not, it needs to use 8080
         try:
@@ -1250,10 +1310,23 @@ class Server:
 
 
 def run_server(
-    keyboard_queue, ui_queue, gps_queue, shared_state, log_queue, verbose=False
+    keyboard_queue,
+    ui_queue,
+    gps_queue,
+    shared_state,
+    log_queue,
+    verbose=False,
+    fake_solve_command_queue=None,
 ):
     MultiprocLogging.configurer(log_queue)
-    server = Server(keyboard_queue, ui_queue, gps_queue, shared_state, verbose)
+    server = Server(
+        keyboard_queue,
+        ui_queue,
+        gps_queue,
+        shared_state,
+        verbose,
+        fake_solve_command_queue=fake_solve_command_queue,
+    )
     server.run()
 
 
