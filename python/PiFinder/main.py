@@ -610,7 +610,6 @@ def main(
                 camera_command_queue,  # For raw SQM capture
                 verbose,
             ),
-            kwargs={"fake_solve_command_queue": fake_solve_command_queue},
         )
         solver_process.start()
 
@@ -631,6 +630,7 @@ def main(
             kwargs={
                 "command_queue": integrator_command_queue,
                 "camera_command_queue": camera_command_queue,
+                "fake_solve_command_queue": fake_solve_command_queue,
             },
         )
         integrator_process.start()
