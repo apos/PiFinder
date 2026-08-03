@@ -162,6 +162,7 @@ def register_api_routes(app, server_instance, require_auth=False):
                 "solve_state": ss.solve_state(),
                 "camera_type": ss.camera_type(),
                 "debug_solve": ss.debug_solve(),
+                "fake_solve_active": ss.fake_solve_active(),
                 "location": loc.to_dict() if loc else None,
                 "solution": _solution_to_dict(sol),
                 "datetime": {
@@ -793,6 +794,23 @@ def register_api_routes(app, server_instance, require_auth=False):
             return _json_response({"success": True, "ra": ra, "dec": dec})
         except Exception as e:
             logger.error("api/fake_solve error: %s", e)
+            return _json_response({"error": str(e)}, 500)
+
+    @app.route("/api/fake_solve", methods=["DELETE"])
+    def api_fake_solve_disable():
+        """Turn Fake-Solve back off, resuming normal real-camera solving.
+
+        Only clears the flag the integrator's exclusivity guard checks
+        (see integrator.py) - the last fake-anchored estimate is left as-is
+        and simply gets overwritten by the next real solve/failed-solve
+        result, same as any other "waiting for fresh data" gap. Read the
+        resulting state back via "fake_solve_active" in GET /api/status.
+        """
+        try:
+            server_instance.shared_state.set_fake_solve_active(False)
+            return _json_response({"success": True})
+        except Exception as e:
+            logger.error("api/fake_solve DELETE error: %s", e)
             return _json_response({"error": str(e)}, 500)
 
     @app.route("/api/key", methods=["POST"])
